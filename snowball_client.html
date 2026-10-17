@@ -28,6 +28,9 @@
             background-color: rgb(200, 240, 255);
             width: 100vw;
             height: 100vh;
+            /* These calculations lock the aspect ratio to exactly 800x600 */
+            max-width: calc(100vh * (800 / 600));
+            max-height: calc(100vw * (600 / 800));
             display: block;
         }
     </style>
