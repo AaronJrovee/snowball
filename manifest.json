@@ -1,1 +1,22 @@
-
+{
+  "name": "Snowball.io",
+  "short_name": "Snowball",
+  "description": "A multiplayer snowball fighting game.",
+  "start_url": "./",
+  "display": "fullscreen",
+  "background_color": "#87CEEB",
+  "theme_color": "#87CEEB",
+  "orientation": "landscape",
+  "icons": [
+    {
+      "src": "favicon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "favicon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
