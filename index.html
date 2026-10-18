@@ -1256,16 +1256,16 @@
                     let entry_text = `${current_rank}. ${p.name || 'Unknown'} - ${Math.trunc(p.size)}${status_marker}`;
 
                     let txt_width = ctx.measureText(entry_text).width;
-                    let txt_height = 18;
                     ctx.fillStyle = `rgba(255, 255, 255, ${180 / 255})`;
-                    // Increased horizontal padding (+20) and vertical padding (+12)
-                    ctx.fillRect(10, y_offset - 6, txt_width + 20, txt_height + 12);
+                    
+                    // Increased box height to 22px for comfortable padding
+                    ctx.fillRect(10, y_offset - 3, txt_width + 10, 22);
 
                     ctx.fillStyle = text_color;
-                    // Shifted text 5px right to match the new padding
-                    ctx.fillText(entry_text, 20, y_offset);
-                    // Increased line-spacing offset to prevent the padded boxes from overlapping
-                    y_offset += 30;
+                    ctx.fillText(entry_text, 15, y_offset);
+                    
+                    // Restored the original 22px spacing so the boxes stack seamlessly
+                    y_offset += 22;
                 }
                 ctx.restore();
 
@@ -1637,11 +1637,16 @@
                 last_alive_players = current_alive_players;
 
                 // --- RECORD GAME HISTORY ---
-                if (gamestate.started && ["GAME", "OFFLINE_GAME", "WINNER"].includes(app_state)) {
+                if (gamestate && gamestate.started && ["GAME", "OFFLINE_GAME", "WINNER"].includes(app_state)) {
+                    // Prevent memory spikes by capping the history array to the last 4 minutes (14,400 frames at 60fps)
+                    if (game_history.length > 14400) {
+                        game_history.shift(); 
+                    }
+                    
                     let frame = {
-                        players: (gamestate.players || []).map(p => ({ ...p })),
-                        projectiles: current_proj_list.map(pr => [...pr]),
-                        particles: (gamestate.particles || []).map(pt => [...pt]),
+                        players: Array.isArray(gamestate.players) ? gamestate.players.map(p => ({ ...p })) : [],
+                        projectiles: Array.isArray(current_proj_list) ? current_proj_list.map(pr => [...pr]) : [],
+                        particles: Array.isArray(gamestate.particles) ? gamestate.particles.map(pt => [...pt]) : [],
                         ring: gamestate.ring !== undefined ? gamestate.ring : 2000,
                         started: true
                     };
