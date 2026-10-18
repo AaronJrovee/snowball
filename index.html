@@ -599,7 +599,29 @@
                     if ("particles" in payload) {
                         gamestate.particles = payload.particles;
                     }
-                    gamestate.players = payload.players || [];
+                    
+                    // Unpack the compressed array sent from the server back into objects
+                    let unpacked_players = [];
+                    if (payload.players) {
+                        for (let p_data of payload.players) {
+                            unpacked_players.push({
+                                id: p_data[0],
+                                x: p_data[1],
+                                y: p_data[2],
+                                size: p_data[3],
+                                angle: p_data[4],
+                                alive: p_data[5] === 1,
+                                ready: p_data[6] === 1,
+                                name: p_data[7],
+                                is_aiming: p_data[8] === 1,
+                                aim_angle: p_data[9],
+                                is_bot: p_data[10] === 1,
+                                stun_timer: p_data[11]
+                            });
+                        }
+                    }
+                    gamestate.players = unpacked_players;
+                    
                     gamestate.projectiles = payload.projectiles || [];
                     gamestate.ring = payload.ring !== undefined ? payload.ring : 2000;
                     gamestate.started = payload.started || false;
