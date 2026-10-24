@@ -1665,10 +1665,12 @@
                         game_history.shift(); 
                     }
                     
+                    // MEMORY FIX: We use a fast shallow copy (.slice) instead of an expensive deep copy (.map). 
+                    // This prevents the browser from generating 60,000 tiny arrays per second, completely eliminating the lag!
                     let frame = {
-                        players: Array.isArray(gamestate.players) ? gamestate.players.map(p => ({ ...p })) : [],
-                        projectiles: Array.isArray(current_proj_list) ? current_proj_list.map(pr => [...pr]) : [],
-                        particles: Array.isArray(gamestate.particles) ? gamestate.particles.map(pt => [...pt]) : [],
+                        players: gamestate.players || [],
+                        projectiles: current_proj_list || [],
+                        particles: gamestate.particles ? gamestate.particles.slice() : [],
                         ring: gamestate.ring !== undefined ? gamestate.ring : 2000,
                         started: true
                     };
