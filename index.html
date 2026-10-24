@@ -11,6 +11,11 @@
     <link rel="manifest" href="manifest.json">
     
     <style>
+        /* CSS variables to control visibility cleanly */
+        :root {
+            --canvas3d-display: none;
+            --canvas2d-bg: rgb(200, 240, 255);
+        }
         body {
             margin: 0;
             padding: 0;
@@ -25,17 +30,30 @@
             -webkit-user-select: none;
         }
         canvas {
-            background-color: rgb(200, 240, 255);
             width: 100vw;
             height: 100vh;
             /* These calculations lock the aspect ratio to exactly 800x600 */
             max-width: calc(100vh * (800 / 600));
             max-height: calc(100vw * (600 / 800));
             display: block;
+            position: absolute;
+        }
+        #canvas3d { 
+            z-index: 1; 
+            background-color: rgb(135, 206, 235);
+            display: var(--canvas3d-display);
+        }
+        #screen { 
+            z-index: 2; 
+            pointer-events: auto; 
+            background-color: var(--canvas2d-bg);
         }
     </style>
+    <!-- Include Three.js for 3D rendering -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
+    <canvas id="canvas3d"></canvas>
     <canvas id="screen" width="800" height="600"></canvas>
     <script>
         // ==============================================================================
@@ -126,6 +144,76 @@
         
         let last_collect_time = 0; // Tracks audio throttling
 
+        // --- THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 500, 3000);
+
+        const camera = new THREE.PerspectiveCamera(60, WIDTH / HEIGHT, 1, 10000);
+        const canvas3d = document.getElementById("canvas3d");
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, antialias: true, alpha: true });
+        renderer.setSize(WIDTH, HEIGHT, false);
+        renderer.shadowMap.enabled = true;
+
+        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambient);
+        const dLight = new THREE.DirectionalLight(0xffffff, 0.7);
+        dLight.position.set(1000, 2000, 1000);
+        dLight.castShadow = true;
+        dLight.shadow.camera.left = -3000;
+        dLight.shadow.camera.right = 3000;
+        dLight.shadow.camera.top = 3000;
+        dLight.shadow.camera.bottom = -3000;
+        scene.add(dLight);
+
+        // Make the ground more originally blue
+        const groundGeo = new THREE.PlaneGeometry(10000, 10000);
+        const groundMat = new THREE.MeshLambertMaterial({ color: 0x87CEEB }); 
+        const groundMesh = new THREE.Mesh(groundGeo, groundMat);
+        groundMesh.rotation.x = -Math.PI/2;
+        groundMesh.receiveShadow = true;
+        scene.add(groundMesh);
+
+        const ringGeo = new THREE.TorusGeometry(2000, 20, 16, 100);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0xffa500 });
+        const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+        ringMesh.rotation.x = -Math.PI/2;
+        ringMesh.position.y = 5;
+        scene.add(ringMesh);
+
+        const partGeo = new THREE.SphereGeometry(1, 8, 8);
+        const partMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+        const partInstanced = new THREE.InstancedMesh(partGeo, partMat, 2000);
+        partInstanced.castShadow = true;
+        scene.add(partInstanced);
+        
+        const projGeo = new THREE.SphereGeometry(1, 16, 16);
+        const projMat = new THREE.MeshLambertMaterial({ color: 0xddddff });
+        const projInstanced = new THREE.InstancedMesh(projGeo, projMat, 200);
+        projInstanced.castShadow = true;
+        scene.add(projInstanced);
+
+        const aimRayGeo = new THREE.PlaneGeometry(1, 1);
+        aimRayGeo.translate(0.5, 0, 0); // Origin at left edge
+        const aimRayMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthWrite: false });
+        const aimRayMesh = new THREE.Mesh(aimRayGeo, aimRayMat);
+        aimRayMesh.rotation.order = "YXZ";
+        aimRayMesh.visible = false;
+        scene.add(aimRayMesh);
+
+        let playerMeshes = {};
+
+        function project3D(x, y, z) {
+            let vec = new THREE.Vector3(x, y, z);
+            vec.project(camera);
+            if (vec.z > 1) return null; // Behind camera
+            return [
+                (vec.x * 0.5 + 0.5) * WIDTH,
+                (-vec.y * 0.5 + 0.5) * HEIGHT
+            ];
+        }
+
+
         // --- GLOBAL VARIABLES ---
         let app_state = "MENU";
         let server_status = "OK";
@@ -176,10 +264,11 @@
             };
         }
 
-        const TOGGLE_BTN_RECT = makeRect(WIDTH - 225, 15, 135, 35);
+        const MODE_BTN_RECT = makeRect(WIDTH - 245, 15, 155, 35);
         const BACK_BTN_RECT = makeRect(WIDTH - 80, 15, 65, 30);
 
-        let use_textures = false;
+        let display_mode = "DEFAULT"; // DEFAULT, TEXTURES, 3D
+        let use_textures = false; // Kept for backwards compatibility with logic
         let offline_engine = null;
 
         // ==============================================================================
@@ -689,57 +778,68 @@
         }
 
         function draw_menu() {
-            // 1. Sky background
-            ctx.fillStyle = "rgb(135, 206, 235)";
-            ctx.fillRect(0, 0, WIDTH, HEIGHT);
-
-            // 2. Update and draw menu snowflakes
-            for (let flake of menu_snowflakes) {
-                flake[1] += flake[3]; // Move down
-                flake[0] += Math.sin(flake[1] * 0.05) * 0.5; // Sway
-                if (flake[1] > HEIGHT) {
-                    flake[1] = randInt(-50, -10);
-                    flake[0] = randInt(0, WIDTH);
-                }
-                drawCircle(Math.trunc(flake[0]), Math.trunc(flake[1]), Math.trunc(flake[2]), WHITE);
-            }
-
-            // 3. Draw a snow-covered hill
-            let hill_start_y = Math.floor(HEIGHT / 3);
-            let hill_end_y = HEIGHT;
-            ctx.fillStyle = "rgb(240, 250, 255)";
-            ctx.beginPath();
-            ctx.moveTo(0, hill_start_y);
-            ctx.lineTo(WIDTH, hill_end_y);
-            ctx.lineTo(0, HEIGHT);
-            ctx.closePath();
-            ctx.fill();
-
-            // 4. Update and draw rolling snowball locked to the hill slope
-            menu_snowball.x += menu_snowball.vx;
-            menu_snowball.angle += 0.05;
-            menu_snowball.size += 0.05;
-
-            let slope = (hill_end_y - hill_start_y) / WIDTH;
-            menu_snowball.y = hill_start_y + (menu_snowball.x * slope) - (menu_snowball.size * 0.8);
-
-            if (menu_snowball.x > WIDTH + 100) {
-                menu_snowball.x = -100;
-                menu_snowball.size = 20;
-            }
-
-            let sb_x = Math.trunc(menu_snowball.x);
-            let sb_y = Math.trunc(menu_snowball.y);
-            let sb_size = Math.trunc(menu_snowball.size);
-
-            if (snow_sprite) {
-                ctx.save();
-                ctx.translate(sb_x, sb_y);
-                ctx.rotate(menu_snowball.angle);
-                ctx.drawImage(snow_sprite, -sb_size, -sb_size, sb_size * 2, sb_size * 2);
-                ctx.restore();
+            if (display_mode === "3D") {
+                ctx.clearRect(0, 0, WIDTH, HEIGHT);
+                renderer.render(scene, camera);
+                camera.position.x = Math.cos(get_ticks() * 0.0005) * 1000;
+                camera.position.z = Math.sin(get_ticks() * 0.0005) * 1000;
+                camera.position.y = 1000;
+                camera.lookAt(0, 0, 0);
             } else {
-                drawCircle(sb_x, sb_y, sb_size, WHITE);
+                // 1. Sky background
+                ctx.fillStyle = "rgb(135, 206, 235)";
+                ctx.fillRect(0, 0, WIDTH, HEIGHT);
+            }
+
+            if (display_mode !== "3D") {
+                // 2. Update and draw menu snowflakes
+                for (let flake of menu_snowflakes) {
+                    flake[1] += flake[3]; // Move down
+                    flake[0] += Math.sin(flake[1] * 0.05) * 0.5; // Sway
+                    if (flake[1] > HEIGHT) {
+                        flake[1] = randInt(-50, -10);
+                        flake[0] = randInt(0, WIDTH);
+                    }
+                    drawCircle(Math.trunc(flake[0]), Math.trunc(flake[1]), Math.trunc(flake[2]), WHITE);
+                }
+
+                // 3. Draw a snow-covered hill
+                let hill_start_y = Math.floor(HEIGHT / 3);
+                let hill_end_y = HEIGHT;
+                ctx.fillStyle = "rgb(240, 250, 255)";
+                ctx.beginPath();
+                ctx.moveTo(0, hill_start_y);
+                ctx.lineTo(WIDTH, hill_end_y);
+                ctx.lineTo(0, HEIGHT);
+                ctx.closePath();
+                ctx.fill();
+
+                // 4. Update and draw rolling snowball locked to the hill slope
+                menu_snowball.x += menu_snowball.vx;
+                menu_snowball.angle += 0.05;
+                menu_snowball.size += 0.05;
+
+                let slope = (hill_end_y - hill_start_y) / WIDTH;
+                menu_snowball.y = hill_start_y + (menu_snowball.x * slope) - (menu_snowball.size * 0.8);
+
+                if (menu_snowball.x > WIDTH + 100) {
+                    menu_snowball.x = -100;
+                    menu_snowball.size = 20;
+                }
+
+                let sb_x = Math.trunc(menu_snowball.x);
+                let sb_y = Math.trunc(menu_snowball.y);
+                let sb_size = Math.trunc(menu_snowball.size);
+
+                if (snow_sprite && display_mode === "TEXTURES") {
+                    ctx.save();
+                    ctx.translate(sb_x, sb_y);
+                    ctx.rotate(menu_snowball.angle);
+                    ctx.drawImage(snow_sprite, -sb_size, -sb_size, sb_size * 2, sb_size * 2);
+                    ctx.restore();
+                } else {
+                    drawCircle(sb_x, sb_y, sb_size, WHITE);
+                }
             }
 
             // 5. Translucent Layer (separates UI from bg)
@@ -858,7 +958,9 @@
         }
 
         function draw_winner() {
+            if (display_mode === "3D") renderer.render(scene, camera);
             ctx.fillStyle = "rgba(0, 0, 0, 0.588)";
+            if (display_mode === "3D") ctx.clearRect(0, 0, WIDTH, HEIGHT);
             ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
             ctx.save();
@@ -872,8 +974,10 @@
 
         function draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos, can_shoot, dt = 0.033) {
             if (!gamestate || Object.keys(gamestate).length === 0) {
-                ctx.fillStyle = BG_COLOR_STR;
-                ctx.fillRect(0, 0, WIDTH, HEIGHT);
+                ctx.fillStyle = display_mode === "3D" ? "transparent" : BG_COLOR_STR;
+                if (display_mode !== "3D") ctx.fillRect(0, 0, WIDTH, HEIGHT);
+                else ctx.clearRect(0, 0, WIDTH, HEIGHT);
+                
                 ctx.save();
                 ctx.font = "20px Arial";
                 ctx.fillStyle = BLACK;
@@ -882,6 +986,10 @@
                 ctx.fillText("Loading...", WIDTH / 2, HEIGHT / 2);
                 ctx.restore();
                 return;
+            }
+            
+            if (display_mode === "3D") {
+                ctx.clearRect(0, 0, WIDTH, HEIGHT);
             }
 
             // --- LERP (SMOOTHING) LOGIC ---
@@ -981,220 +1089,377 @@
                 zoom = ZOOM_THRESHOLD / target_size;
             }
 
-            // --- MOVING BACKGROUND LOGIC CONSOLIDATED ---
-            if (bg_sprite && use_textures) {
-                let scaled_bg_w = Math.max(1, Math.trunc(bg_sprite.width * zoom));
-                let scaled_bg_h = Math.max(1, Math.trunc(bg_sprite.height * zoom));
+            // --- RENDERING BRANCH ---
+            if (display_mode === "DEFAULT" || display_mode === "TEXTURES") {
+                // --- MOVING BACKGROUND LOGIC CONSOLIDATED ---
+                if (bg_sprite && display_mode === "TEXTURES") {
+                    let scaled_bg_w = Math.max(1, Math.trunc(bg_sprite.width * zoom));
+                    let scaled_bg_h = Math.max(1, Math.trunc(bg_sprite.height * zoom));
 
-                let offset_x = pyMod(-Math.trunc(target_x * zoom), scaled_bg_w);
-                let offset_y = pyMod(-Math.trunc(target_y * zoom), scaled_bg_h);
+                    let offset_x = pyMod(-Math.trunc(target_x * zoom), scaled_bg_w);
+                    let offset_y = pyMod(-Math.trunc(target_y * zoom), scaled_bg_h);
 
-                for (let x = offset_x - scaled_bg_w; x < WIDTH; x += scaled_bg_w) {
-                    for (let y = offset_y - scaled_bg_h; y < HEIGHT; y += scaled_bg_h) {
-                        ctx.drawImage(bg_sprite, x, y, scaled_bg_w, scaled_bg_h);
-                    }
-                }
-
-                ctx.fillStyle = `rgba(${BG_COLOR[0]}, ${BG_COLOR[1]}, ${BG_COLOR[2]}, ${120 / 255})`;
-                ctx.fillRect(0, 0, WIDTH, HEIGHT);
-            } else {
-                ctx.fillStyle = BG_COLOR_STR;
-                ctx.fillRect(0, 0, WIDTH, HEIGHT);
-            }
-
-            function to_screen(world_x, world_y) {
-                let shake_x = screen_shake > 0 ? randUniform(-screen_shake, screen_shake) : 0;
-                let shake_y = screen_shake > 0 ? randUniform(-screen_shake, screen_shake) : 0;
-                return [
-                    Math.trunc((world_x - target_x) * zoom + WIDTH / 2 + shake_x),
-                    Math.trunc((world_y - target_y) * zoom + HEIGHT / 2 + shake_y)
-                ];
-            }
-
-            // Decay the screen shake over time
-            if (screen_shake > 0) {
-                screen_shake = Math.max(0, screen_shake - 1.5);
-            }
-
-            let ring_r = gamestate.ring !== undefined ? gamestate.ring : 2000;
-            let center_screen = to_screen(0, 0);
-            strokeCircle(center_screen[0], center_screen[1], Math.max(1, Math.trunc(ring_r * zoom)), ORANGE, Math.max(1, Math.trunc(5 * zoom)));
-
-            // Render Snow Particles
-            let valid_particles = [];
-            for (let p of (gamestate.particles || [])) {
-                let eaten = false;
-                for (let player of (gamestate.players || [])) {
-                    if (player.alive && Math.hypot(player.x - p[0], player.y - p[1]) < player.size + p[2]) {
-                        eaten = true;
-                        if ((player.id === my_id || (app_state === "OFFLINE_GAME" && player.id === 0)) && collect_sound) {
-                            let now_t = performance.now();
-                            if (now_t - last_collect_time > 30) { // Limit to 1 sound every 30ms
-                                collect_sound.play();
-                                last_collect_time = now_t;
-                            }
+                    for (let x = offset_x - scaled_bg_w; x < WIDTH; x += scaled_bg_w) {
+                        for (let y = offset_y - scaled_bg_h; y < HEIGHT; y += scaled_bg_h) {
+                            ctx.drawImage(bg_sprite, x, y, scaled_bg_w, scaled_bg_h);
                         }
-                        break;
+                    }
+
+                    ctx.fillStyle = `rgba(${BG_COLOR[0]}, ${BG_COLOR[1]}, ${BG_COLOR[2]}, ${120 / 255})`;
+                    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+                } else {
+                    ctx.fillStyle = BG_COLOR_STR;
+                    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+                }
+
+                function to_screen(world_x, world_y) {
+                    let shake_x = screen_shake > 0 ? randUniform(-screen_shake, screen_shake) : 0;
+                    let shake_y = screen_shake > 0 ? randUniform(-screen_shake, screen_shake) : 0;
+                    return [
+                        Math.trunc((world_x - target_x) * zoom + WIDTH / 2 + shake_x),
+                        Math.trunc((world_y - target_y) * zoom + HEIGHT / 2 + shake_y)
+                    ];
+                }
+
+                // Decay the screen shake over time
+                if (screen_shake > 0) {
+                    screen_shake = Math.max(0, screen_shake - 1.5);
+                }
+
+                let ring_r = gamestate.ring !== undefined ? gamestate.ring : 2000;
+                let center_screen = to_screen(0, 0);
+                strokeCircle(center_screen[0], center_screen[1], Math.max(1, Math.trunc(ring_r * zoom)), ORANGE, Math.max(1, Math.trunc(5 * zoom)));
+
+                // Render Snow Particles
+                let valid_particles = [];
+                for (let p of (gamestate.particles || [])) {
+                    let eaten = false;
+                    for (let player of (gamestate.players || [])) {
+                        if (player.alive && Math.hypot(player.x - p[0], player.y - p[1]) < player.size + p[2]) {
+                            eaten = true;
+                            if ((player.id === my_id || (app_state === "OFFLINE_GAME" && player.id === 0)) && collect_sound) {
+                                let now_t = performance.now();
+                                if (now_t - last_collect_time > 30) {
+                                    collect_sound.play();
+                                    last_collect_time = now_t;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if (!eaten) {
+                        valid_particles.push(p);
+                        let [sx, sy] = to_screen(p[0], p[1]);
+                        let scaled_p_size = Math.max(1, Math.trunc(p[2] * zoom));
+                        if (snow_sprite && display_mode === "TEXTURES") {
+                            ctx.drawImage(snow_sprite, sx - scaled_p_size, sy - scaled_p_size, scaled_p_size * 2, scaled_p_size * 2);
+                        } else {
+                            drawCircle(sx, sy, scaled_p_size, WHITE);
+                        }
                     }
                 }
-                if (!eaten) {
-                    valid_particles.push(p);
+                gamestate.particles = valid_particles;
+
+                // Render Projectiles
+                for (let p of (gamestate.projectiles || [])) {
                     let [sx, sy] = to_screen(p[0], p[1]);
                     let scaled_p_size = Math.max(1, Math.trunc(p[2] * zoom));
-                    if (snow_sprite && use_textures) {
+                    if (snow_sprite && display_mode === "TEXTURES") {
                         ctx.drawImage(snow_sprite, sx - scaled_p_size, sy - scaled_p_size, scaled_p_size * 2, scaled_p_size * 2);
                     } else {
                         drawCircle(sx, sy, scaled_p_size, WHITE);
                     }
                 }
-            }
-            gamestate.particles = valid_particles;
 
-            // Render Projectiles
-            for (let p of (gamestate.projectiles || [])) {
-                let [sx, sy] = to_screen(p[0], p[1]);
-                let scaled_p_size = Math.max(1, Math.trunc(p[2] * zoom));
-                if (snow_sprite && use_textures) {
-                    ctx.drawImage(snow_sprite, sx - scaled_p_size, sy - scaled_p_size, scaled_p_size * 2, scaled_p_size * 2);
-                } else {
-                    drawCircle(sx, sy, scaled_p_size, WHITE);
-                }
-            }
+                // Render Players (Using smoothed visual data)
+                let sorted_draw_players = [...(gamestate.players || [])].sort((a, b) => (a.id === my_id ? 1 : 0) - (b.id === my_id ? 1 : 0));
+                for (let p of sorted_draw_players) {
+                    if (!p.alive || !(p.id in visual_players)) continue;
 
-            // Render Players (Using smoothed visual data)
-            let sorted_draw_players = [...(gamestate.players || [])].sort((a, b) => (a.id === my_id ? 1 : 0) - (b.id === my_id ? 1 : 0));
-            for (let p of sorted_draw_players) {
-                if (!p.alive || !(p.id in visual_players)) continue;
-
-                let vp = visual_players[p.id];
-                let [sx, sy] = to_screen(vp.x, vp.y);
-                let scaled_size = Math.max(1, Math.trunc(vp.size * zoom));
-
-                // 1. DRAW FIXED 2.5D SHADOW FIRST
-                let shadow_w = Math.trunc(scaled_size * 1.8);
-                let shadow_h = Math.trunc(scaled_size * 0.8);
-                let shadow_x = sx;
-                let shadow_y = sy + Math.trunc(scaled_size * 0.75);
-
-                if (shadow_w > 0 && shadow_h > 0) {
-                    ctx.save();
-                    ctx.beginPath();
-                    ctx.ellipse(shadow_x, shadow_y, shadow_w / 2, shadow_h / 2, 0, 0, Math.PI * 2);
-                    ctx.fillStyle = `rgba(0, 0, 0, ${60 / 255})`;
-                    ctx.fill();
-                    ctx.restore();
-                }
-
-                // 2. DRAW FADING PARTICLE TRAIL SECOND
-                if (vp.trail_particles) {
-                    for (let pt of vp.trail_particles) {
-                        let [ptx, pty] = to_screen(pt[0], pt[1]);
-                        let p_radius = Math.max(1, Math.trunc(pt[2] * zoom));
-                        let alpha = Math.trunc((pt[3] / pt[4]) * 200) / 255;
-                        drawCircle(ptx, pty, p_radius, `rgba(255, 255, 255, ${alpha})`);
-                    }
-                }
-
-                // 3. DRAW THE ACTUAL BALL THIRD
-                if (snow_sprite && use_textures) {
-                    ctx.drawImage(snow_sprite, sx - scaled_size, sy - scaled_size, scaled_size * 2, scaled_size * 2);
-                } else {
-                    let color = p.id === my_id ? YELLOWISH_WHITE : "rgb(240, 240, 200)";
-                    drawCircle(sx, sy, scaled_size, color);
-                }
-
-                if ((p.stun_timer || 0) > 0) {
-                    let bar_w = 40;
-                    ctx.fillStyle = RED;
-                    ctx.fillRect(sx - bar_w / 2, sy - scaled_size - 25, bar_w, 6);
-                    ctx.fillStyle = "rgb(255, 200, 0)";
-                    ctx.fillRect(sx - bar_w / 2, sy - scaled_size - 25, bar_w * (p.stun_timer / 120), 6);
-                }
-
-                if (p.is_aiming && p.id === my_id) {
-                    let cur_aim_angle = vp.aim_angle !== undefined ? vp.aim_angle : (p.aim_angle || 0);
-                    let ray_length = 2000;
-                    let end_x = Math.trunc(sx + Math.cos(cur_aim_angle) * ray_length);
-                    let end_y = Math.trunc(sy + Math.sin(cur_aim_angle) * ray_length);
-
-                    let p_size = vp.size;
-                    let proj_size = (p_size + (p_size / 8)) / 4;
-                    let ray_width = Math.max(2, Math.trunc((proj_size * 2) * zoom));
-
-                    ctx.save();
-                    ctx.beginPath();
-                    ctx.moveTo(sx, sy);
-                    ctx.lineTo(end_x, end_y);
-                    ctx.strokeStyle = `rgba(255, 255, 255, ${80 / 255})`;
-                    ctx.lineWidth = ray_width;
-                    ctx.stroke();
-                    ctx.restore();
-                } else {
-                    let angle = vp.angle;
-                    let tip_x = sx + Math.cos(angle) * (scaled_size + 25 * zoom);
-                    let tip_y = sy + Math.sin(angle) * (scaled_size + 25 * zoom);
-                    let base_left_x = sx + Math.cos(angle - 0.5) * (scaled_size + 15 * zoom);
-                    let base_left_y = sy + Math.sin(angle - 0.5) * (scaled_size + 15 * zoom);
-                    let base_right_x = sx + Math.cos(angle + 0.5) * (scaled_size + 15 * zoom);
-                    let base_right_y = sy + Math.sin(angle + 0.5) * (scaled_size + 15 * zoom);
-
-                    ctx.save();
-                    ctx.beginPath();
-                    ctx.moveTo(tip_x, tip_y);
-                    ctx.lineTo(base_left_x, base_left_y);
-                    ctx.lineTo(base_right_x, base_right_y);
-                    ctx.closePath();
-                    ctx.fillStyle = BLACK;
-                    ctx.fill();
-                    ctx.restore();
-                }
-
-                let name_text = p.name || "Unknown";
-                ctx.save();
-                ctx.font = "bold 16px Arial";
-                ctx.fillStyle = BLACK;
-                ctx.textAlign = "center";
-                ctx.textBaseline = "middle";
-                ctx.fillText(name_text, sx, sy - scaled_size - 15);
-                ctx.restore();
-            }
-
-            // --- OUT OF BOUNDS DIRECTIONAL ARROW ---
-            if (me && me.alive && (my_id in visual_players)) {
-                let vp = visual_players[my_id];
-                if (Math.hypot(vp.x, vp.y) > ring_r) {
-                    let angle_to_center = Math.atan2(-vp.y, -vp.x);
+                    let vp = visual_players[p.id];
                     let [sx, sy] = to_screen(vp.x, vp.y);
                     let scaled_size = Math.max(1, Math.trunc(vp.size * zoom));
 
-                    let pulse = (Math.sin(get_ticks() * 0.015) + 1) / 2;
-                    let arrow_color = `rgb(255, ${Math.trunc(80 * pulse)}, ${Math.trunc(80 * pulse)})`;
+                    // 1. DRAW FIXED 2.5D SHADOW FIRST
+                    let shadow_w = Math.trunc(scaled_size * 1.8);
+                    let shadow_h = Math.trunc(scaled_size * 0.8);
+                    let shadow_x = sx;
+                    let shadow_y = sy + Math.trunc(scaled_size * 0.75);
 
-                    let dist_tip = scaled_size + (50 * zoom);
-                    let dist_base = scaled_size + (20 * zoom);
+                    if (shadow_w > 0 && shadow_h > 0) {
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.ellipse(shadow_x, shadow_y, shadow_w / 2, shadow_h / 2, 0, 0, Math.PI * 2);
+                        ctx.fillStyle = `rgba(0, 0, 0, ${60 / 255})`;
+                        ctx.fill();
+                        ctx.restore();
+                    }
 
-                    let tip_x = sx + Math.cos(angle_to_center) * dist_tip;
-                    let tip_y = sy + Math.sin(angle_to_center) * dist_tip;
-                    let base_l_x = sx + Math.cos(angle_to_center - 0.35) * dist_base;
-                    let base_l_y = sy + Math.sin(angle_to_center - 0.35) * dist_base;
-                    let base_r_x = sx + Math.cos(angle_to_center + 0.35) * dist_base;
-                    let base_r_y = sy + Math.sin(angle_to_center + 0.35) * dist_base;
+                    // 2. DRAW FADING PARTICLE TRAIL SECOND
+                    if (vp.trail_particles) {
+                        for (let pt of vp.trail_particles) {
+                            let [ptx, pty] = to_screen(pt[0], pt[1]);
+                            let p_radius = Math.max(1, Math.trunc(pt[2] * zoom));
+                            let alpha = Math.trunc((pt[3] / pt[4]) * 200) / 255;
+                            drawCircle(ptx, pty, p_radius, `rgba(255, 255, 255, ${alpha})`);
+                        }
+                    }
 
+                    // 3. DRAW THE ACTUAL BALL THIRD
+                    if (snow_sprite && display_mode === "TEXTURES") {
+                        ctx.drawImage(snow_sprite, sx - scaled_size, sy - scaled_size, scaled_size * 2, scaled_size * 2);
+                    } else {
+                        let color = p.id === my_id ? YELLOWISH_WHITE : "rgb(240, 240, 200)";
+                        drawCircle(sx, sy, scaled_size, color);
+                    }
+
+                    if ((p.stun_timer || 0) > 0) {
+                        let bar_w = 40;
+                        ctx.fillStyle = RED;
+                        ctx.fillRect(sx - bar_w / 2, sy - scaled_size - 25, bar_w, 6);
+                        ctx.fillStyle = "rgb(255, 200, 0)";
+                        ctx.fillRect(sx - bar_w / 2, sy - scaled_size - 25, bar_w * (p.stun_timer / 120), 6);
+                    }
+
+                    if (p.is_aiming && p.id === my_id) {
+                        let cur_aim_angle = vp.aim_angle !== undefined ? vp.aim_angle : (p.aim_angle || 0);
+                        let ray_length = 2000;
+                        let end_x = Math.trunc(sx + Math.cos(cur_aim_angle) * ray_length);
+                        let end_y = Math.trunc(sy + Math.sin(cur_aim_angle) * ray_length);
+
+                        let p_size = vp.size;
+                        let proj_size = (p_size + (p_size / 8)) / 4;
+                        let ray_width = Math.max(2, Math.trunc((proj_size * 2) * zoom));
+
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.moveTo(sx, sy);
+                        ctx.lineTo(end_x, end_y);
+                        ctx.strokeStyle = `rgba(255, 255, 255, ${80 / 255})`;
+                        ctx.lineWidth = ray_width;
+                        ctx.stroke();
+                        ctx.restore();
+                    }
+                    if (display_mode === "DEFAULT" || display_mode === "TEXTURES") {
+                        let angle = vp.angle;
+                        let tip_x = sx + Math.cos(angle) * (scaled_size + 25 * zoom);
+                        let tip_y = sy + Math.sin(angle) * (scaled_size + 25 * zoom);
+                        let base_left_x = sx + Math.cos(angle - 0.5) * (scaled_size + 15 * zoom);
+                        let base_left_y = sy + Math.sin(angle - 0.5) * (scaled_size + 15 * zoom);
+                        let base_right_x = sx + Math.cos(angle + 0.5) * (scaled_size + 15 * zoom);
+                        let base_right_y = sy + Math.sin(angle + 0.5) * (scaled_size + 15 * zoom);
+
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.moveTo(tip_x, tip_y);
+                        ctx.lineTo(base_left_x, base_left_y);
+                        ctx.lineTo(base_right_x, base_right_y);
+                        ctx.closePath();
+                        ctx.fillStyle = BLACK;
+                        ctx.fill();
+                        ctx.restore();
+                    }
+
+                    let name_text = p.name || "Unknown";
                     ctx.save();
-                    ctx.beginPath();
-                    ctx.moveTo(tip_x, tip_y);
-                    ctx.lineTo(base_l_x, base_l_y);
-                    ctx.lineTo(base_r_x, base_r_y);
-                    ctx.closePath();
-                    ctx.fillStyle = arrow_color;
-                    ctx.fill();
-                    ctx.lineWidth = Math.max(1, Math.trunc(2 * zoom));
-                    ctx.strokeStyle = BLACK;
-                    ctx.stroke();
+                    ctx.font = "bold 16px Arial";
+                    ctx.fillStyle = BLACK;
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(name_text, sx, sy - scaled_size - 15);
                     ctx.restore();
                 }
-            }
 
+                // --- OUT OF BOUNDS DIRECTIONAL ARROW ---
+                if (me && me.alive && (my_id in visual_players) && (display_mode === "DEFAULT" || display_mode === "TEXTURES")) {
+                    let vp = visual_players[my_id];
+                    let ring_r = gamestate.ring !== undefined ? gamestate.ring : 2000;
+                    if (Math.hypot(vp.x, vp.y) > ring_r) {
+                        let angle_to_center = Math.atan2(-vp.y, -vp.x);
+                        let [sx, sy] = to_screen(vp.x, vp.y);
+                        let scaled_size = Math.max(1, Math.trunc(vp.size * zoom));
+
+                        let pulse = (Math.sin(get_ticks() * 0.015) + 1) / 2;
+                        let arrow_color = `rgb(255, ${Math.trunc(80 * pulse)}, ${Math.trunc(80 * pulse)})`;
+
+                        let dist_tip = scaled_size + (50 * zoom);
+                        let dist_base = scaled_size + (20 * zoom);
+
+                        let tip_x = sx + Math.cos(angle_to_center) * dist_tip;
+                        let tip_y = sy + Math.sin(angle_to_center) * dist_tip;
+                        let base_l_x = sx + Math.cos(angle_to_center - 0.35) * dist_base;
+                        let base_l_y = sy + Math.sin(angle_to_center - 0.35) * dist_base;
+                        let base_r_x = sx + Math.cos(angle_to_center + 0.35) * dist_base;
+                        let base_r_y = sy + Math.sin(angle_to_center + 0.35) * dist_base;
+
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.moveTo(tip_x, tip_y);
+                        ctx.lineTo(base_l_x, base_l_y);
+                        ctx.lineTo(base_r_x, base_r_y);
+                        ctx.closePath();
+                        ctx.fillStyle = arrow_color;
+                        ctx.fill();
+                        ctx.lineWidth = Math.max(1, Math.trunc(2 * zoom));
+                        ctx.strokeStyle = BLACK;
+                        ctx.stroke();
+                        ctx.restore();
+                    }
+                }
+            } else if (display_mode === "3D") {
+                if (screen_shake > 0) screen_shake = Math.max(0, screen_shake - 1.5);
+                let shakeX = screen_shake > 0 ? randUniform(-screen_shake, screen_shake) * 2 : 0;
+                let shakeZ = screen_shake > 0 ? randUniform(-screen_shake, screen_shake) * 2 : 0;
+
+                // --- THREE JS UPDATE ---
+                let current_ring = gamestate.ring !== undefined ? gamestate.ring : 2000;
+                ringMesh.scale.set(current_ring / 2000, current_ring / 2000, 1);
+
+                let pCount = 0; let dummy = new THREE.Object3D();
+                let valid_particles = [];
+                for (let p of (gamestate.particles || [])) {
+                    let eaten = false;
+                    for (let player of (gamestate.players || [])) {
+                        if (player.alive && Math.hypot(player.x - p[0], player.y - p[1]) < player.size + p[2]) {
+                            eaten = true;
+                            if ((player.id === my_id || (app_state === "OFFLINE_GAME" && player.id === 0)) && collect_sound) {
+                                let now_t = performance.now();
+                                if (now_t - last_collect_time > 30) { collect_sound.play(); last_collect_time = now_t; }
+                            }
+                            break;
+                        }
+                    }
+                    if (!eaten) {
+                        valid_particles.push(p);
+                        dummy.position.set(p[0], p[2], p[1]); dummy.scale.set(p[2], p[2], p[2]); dummy.updateMatrix();
+                        partInstanced.setMatrixAt(pCount++, dummy.matrix);
+                    }
+                }
+                gamestate.particles = valid_particles;
+                partInstanced.count = pCount; partInstanced.instanceMatrix.needsUpdate = true;
+
+                let prCount = 0;
+                for (let p of (gamestate.projectiles || [])) {
+                    dummy.position.set(p[0], p[2], p[1]); dummy.scale.set(p[2], p[2], p[2]); dummy.updateMatrix();
+                    projInstanced.setMatrixAt(prCount++, dummy.matrix);
+                }
+                projInstanced.count = prCount; projInstanced.instanceMatrix.needsUpdate = true;
+
+                let sorted_draw_players = [...(gamestate.players || [])].sort((a, b) => (a.id === my_id ? 1 : 0) - (b.id === my_id ? 1 : 0));
+                let current_ids = new Set();
+                aimRayMesh.visible = false;
+                
+                for (let p of sorted_draw_players) {
+                    if (!p.alive || !(p.id in visual_players)) continue;
+                    current_ids.add(p.id); let vp = visual_players[p.id];
+                    
+                    if (!playerMeshes[p.id]) {
+                        let group = new THREE.Group();
+                        
+                        let geo = new THREE.IcosahedronGeometry(1, 3);
+                        let mat = new THREE.MeshLambertMaterial({
+                            color: p.id === my_id ? 0xffffdc : 0xf0f0c8,
+                            flatShading: true
+                        });
+                        let sphereMesh = new THREE.Mesh(geo, mat);
+                        sphereMesh.castShadow = true; sphereMesh.receiveShadow = true;
+                        group.add(sphereMesh);
+                        
+                        const dirGeo = new THREE.BufferGeometry();
+                        const vertices = new Float32Array([1.8, 0.0, 0.0, 1.1, 0.0, 0.5, 1.1, 0.0, -0.5]);
+                        dirGeo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+                        dirGeo.computeVertexNormals();
+                        const dirMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+                        const dirMesh = new THREE.Mesh(dirGeo, dirMat);
+                        group.add(dirMesh);
+                        
+                        scene.add(group); playerMeshes[p.id] = group;
+                    }
+                    
+                    let group = playerMeshes[p.id];
+                    let sphere = group.children[0];
+                    
+                    group.position.set(vp.x, vp.size, vp.y);
+                    group.scale.set(vp.size, vp.size, vp.size);
+                    group.rotation.y = -vp.angle;
+                    
+                    let dx = vp.x - (vp.last_x !== undefined ? vp.last_x : vp.x);
+                    let dy = vp.y - (vp.last_y !== undefined ? vp.last_y : vp.y);
+                    let dist = Math.hypot(dx, dy);
+                    if (dist > 0.001) {
+                        sphere.rotation.z -= (dist / vp.size);
+                    }
+                    vp.last_x = vp.x;
+                    vp.last_y = vp.y;
+                    
+                    let screenPos = project3D(vp.x, vp.size * 2 + 10, vp.y);
+                    if (screenPos) {
+                        let [sx, sy] = screenPos;
+                        if ((p.stun_timer || 0) > 0) {
+                            let bar_w = 40; ctx.fillStyle = RED; ctx.fillRect(sx - bar_w / 2, sy - 25, bar_w, 6);
+                            ctx.fillStyle = "rgb(255, 200, 0)"; ctx.fillRect(sx - bar_w / 2, sy - 25, bar_w * (p.stun_timer / 120), 6);
+                        }
+                        if (p.is_aiming && p.id === my_id) {
+                            aimRayMesh.visible = true;
+                            let cur_aim_angle = vp.aim_angle !== undefined ? vp.aim_angle : (p.aim_angle || 0);
+                            
+                            aimRayMesh.position.set(vp.x, 2, vp.y);
+                            aimRayMesh.rotation.set(-Math.PI / 2, -cur_aim_angle, 0);
+                            
+                            let p_size = vp.size;
+                            let proj_size = (p_size + (p_size / 8)) / 4;
+                            aimRayMesh.scale.set(1500, proj_size * 2, 1);
+                        }
+                        let name_text = p.name || "Unknown";
+                        ctx.save(); ctx.font = "bold 16px Arial"; ctx.fillStyle = BLACK; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+                        ctx.fillText(name_text, sx, sy - 15); ctx.restore();
+                    }
+                }
+
+                for (let id in playerMeshes) {
+                    if (!current_ids.has(parseInt(id))) { scene.remove(playerMeshes[id]); delete playerMeshes[id]; }
+                }
+
+                let idealY = (target_size * 5.0) + 250;
+
+                if (!gamestate.started && !is_spectating) {
+                    let idealX = Math.cos(get_ticks() * 0.0005) * 1000; let idealZ = Math.sin(get_ticks() * 0.0005) * 1000; idealY = 1000;
+                    target_x = 0; target_y = 0;
+                    camera.position.x += (idealX - camera.position.x) * 0.1;
+                    camera.position.z += (idealZ - camera.position.z) * 0.1;
+                    camera.position.y += (idealY - camera.position.y) * 0.1;
+                    camera.lookAt(target_x + shakeX, 0, target_y + shakeZ);
+                } else {
+                    camera.position.x = target_x;
+                    camera.position.z = target_y + (target_size * 3.5) + 80;
+                    camera.position.y += (idealY - camera.position.y) * 0.1;
+                    camera.lookAt(target_x + shakeX, 0, target_y + shakeZ);
+                }
+                
+                scene.fog.near = idealY * 0.8;
+                scene.fog.far = idealY * 2.2;
+                
+                renderer.render(scene, camera);
+
+                if (me && me.alive && visual_players[my_id]) {
+                    let vp = visual_players[my_id]; let ring_r = gamestate.ring !== undefined ? gamestate.ring : 2000;
+                    if (Math.hypot(vp.x, vp.y) > ring_r) {
+                        let angle_to_center = Math.atan2(-vp.y, -vp.x);
+                        let screenPos = project3D(vp.x, vp.size, vp.y);
+                        if (screenPos) {
+                            let [sx, sy] = screenPos; let pulse = (Math.sin(get_ticks() * 0.015) + 1) / 2;
+                            let arrow_color = `rgb(255, ${Math.trunc(80 * pulse)}, ${Math.trunc(80 * pulse)})`;
+                            let dist_tip = vp.size + 50; let dist_base = vp.size + 20;
+                            let tip_x = sx + Math.cos(angle_to_center) * dist_tip; let tip_y = sy + Math.sin(angle_to_center) * dist_tip;
+                            let base_l_x = sx + Math.cos(angle_to_center - 0.35) * dist_base; let base_l_y = sy + Math.sin(angle_to_center - 0.35) * dist_base;
+                            let base_r_x = sx + Math.cos(angle_to_center + 0.35) * dist_base; let base_r_y = sy + Math.sin(angle_to_center + 0.35) * dist_base;
+                            ctx.save(); ctx.beginPath(); ctx.moveTo(tip_x, tip_y); ctx.lineTo(base_l_x, base_l_y); ctx.lineTo(base_r_x, base_r_y); ctx.closePath();
+                            ctx.fillStyle = arrow_color; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = BLACK; ctx.stroke(); ctx.restore();
+                        }
+                    }
+                }
+            }
+            
             if (is_spectating) {
                 ctx.save();
                 ctx.font = "bold 40px Arial";
@@ -1324,16 +1589,21 @@
                 ctx.restore();
             }
 
-            // Draw Toggle Button
-            fillRoundRect(TOGGLE_BTN_RECT, "rgb(70, 70, 70)", 5);
-            strokeRoundRect(TOGGLE_BTN_RECT, "rgb(200, 200, 200)", 2, 5);
-            let btn_text = use_textures ? "Textures: ON" : "Textures: OFF";
+            // Draw Display Mode Toggle Button
+            // Slightly wider to fit text
+            fillRoundRect(MODE_BTN_RECT, "rgb(70, 70, 70)", 5);
+            strokeRoundRect(MODE_BTN_RECT, "rgb(200, 200, 200)", 2, 5);
+            let btn_text = "Mode: ";
+            if (display_mode === "DEFAULT") btn_text += "Default";
+            else if (display_mode === "TEXTURES") btn_text += "Textures";
+            else if (display_mode === "3D") btn_text += "3D";
+            
             ctx.save();
             ctx.font = "bold 16px Arial";
             ctx.fillStyle = WHITE;
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
-            ctx.fillText(btn_text, TOGGLE_BTN_RECT.centerx, TOGGLE_BTN_RECT.centery);
+            ctx.fillText(btn_text, MODE_BTN_RECT.centerx, MODE_BTN_RECT.centery);
             ctx.restore();
 
             if (app_state === "OFFLINE_GAME" || (app_state === "GAME" && !gamestate.started)) {
@@ -1750,8 +2020,21 @@
                             visual_players = {};
                             msg_queue = [];
                         } else if (app_state === "GAME" || app_state === "OFFLINE_GAME") {
-                            if (TOGGLE_BTN_RECT.collidepoint(ui_click_pos)) {
-                                use_textures = !use_textures;
+                            if (MODE_BTN_RECT.collidepoint(ui_click_pos)) {
+                                if (display_mode === "DEFAULT") {
+                                    display_mode = "TEXTURES";
+                                    use_textures = true;
+                                } else if (display_mode === "TEXTURES") {
+                                    display_mode = "3D";
+                                    use_textures = false;
+                                    document.documentElement.style.setProperty('--canvas3d-display', 'block');
+                                    document.documentElement.style.setProperty('--canvas2d-bg', 'transparent');
+                                } else if (display_mode === "3D") {
+                                    display_mode = "DEFAULT";
+                                    use_textures = false;
+                                    document.documentElement.style.setProperty('--canvas3d-display', 'none');
+                                    document.documentElement.style.setProperty('--canvas2d-bg', 'rgb(200, 240, 255)');
+                                }
                             } else if ((app_state === "OFFLINE_GAME" || !gamestate.started) && BACK_BTN_RECT.collidepoint(ui_click_pos)) {
                                 app_state = "MENU";
                                 gamestate = {};
@@ -1836,7 +2119,7 @@
                         let left_click_shoot = false;
                         if (mouse_active && Object.keys(active_touches).length === 0) {
                             let dist_to_move_joy = Math.hypot(mouse_start[0] - MOVE_JOY_CENTER[0], mouse_start[1] - MOVE_JOY_CENTER[1]);
-                            let clicked_ui = BACK_BTN_RECT.collidepoint(mouse_start) || TOGGLE_BTN_RECT.collidepoint(mouse_start);
+                            let clicked_ui = BACK_BTN_RECT.collidepoint(mouse_start) || MODE_BTN_RECT.collidepoint(mouse_start);
 
                             if (dist_to_move_joy > JOY_RADIUS * 2.5 && !clicked_ui) {
                                 left_click_shoot = true;
