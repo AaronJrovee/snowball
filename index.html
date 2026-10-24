@@ -123,6 +123,8 @@
         let shoot_sound = loadSound("shoot.ogg");
         let capture_sound = loadSound("capture.ogg");
         let collect_sound = loadSound("collect.ogg");
+        
+        let last_collect_time = 0; // Tracks audio throttling
 
         // --- GLOBAL VARIABLES ---
         let app_state = "MENU";
@@ -1026,7 +1028,11 @@
                     if (player.alive && Math.hypot(player.x - p[0], player.y - p[1]) < player.size + p[2]) {
                         eaten = true;
                         if ((player.id === my_id || (app_state === "OFFLINE_GAME" && player.id === 0)) && collect_sound) {
-                            collect_sound.play();
+                            let now_t = performance.now();
+                            if (now_t - last_collect_time > 30) { // Limit to 1 sound every 30ms
+                                collect_sound.play();
+                                last_collect_time = now_t;
+                            }
                         }
                         break;
                     }
