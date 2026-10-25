@@ -1406,10 +1406,14 @@
                     
                     let group = playerMeshes[p.id];
                     let sphere = group.children[0];
+                    let arrow = group.children[1];
                     
                     group.position.set(vp.x, vp.size, vp.y);
                     group.scale.set(vp.size, vp.size, vp.size);
                     group.rotation.y = -vp.angle;
+                    
+                    // Hide the directional arrow while the player is actively aiming
+                    arrow.visible = !p.is_aiming;
                     
                     let dx = vp.x - (vp.last_x !== undefined ? vp.last_x : vp.x);
                     let dy = vp.y - (vp.last_y !== undefined ? vp.last_y : vp.y);
