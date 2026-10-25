@@ -1247,7 +1247,8 @@
                         ctx.stroke();
                         ctx.restore();
                     }
-                    if (display_mode === "DEFAULT" || display_mode === "TEXTURES") {
+                    // Hide the directional arrow in 2D modes while the player is actively aiming
+                    if ((display_mode === "DEFAULT" || display_mode === "TEXTURES") && !p.is_aiming) {
                         let angle = vp.angle;
                         let tip_x = sx + Math.cos(angle) * (scaled_size + 25 * zoom);
                         let tip_y = sy + Math.sin(angle) * (scaled_size + 25 * zoom);
@@ -1813,7 +1814,8 @@
 
             function step(current_time) {
                 let raw_ms = current_time - last_frame_time;
-                let dt = raw_ms / 1000.0;
+                // Cap delta time at 0.1s to prevent lag spikes from exploding the interpolation mathematics
+                let dt = Math.min(raw_ms / 1000.0, 0.1);
                 last_frame_time = current_time;
 
                 let now = get_ticks();
