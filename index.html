@@ -146,8 +146,8 @@
 
         // --- THREE.JS SETUP ---
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB);
-        scene.fog = new THREE.Fog(0x87CEEB, 500, 3000);
+        scene.background = new THREE.Color(0xc8f0ff);
+        scene.fog = new THREE.Fog(0xc8f0ff, 500, 3000);
 
         const camera = new THREE.PerspectiveCamera(60, WIDTH / HEIGHT, 1, 10000);
         const canvas3d = document.getElementById("canvas3d");
@@ -155,9 +155,9 @@
         renderer.setSize(WIDTH, HEIGHT, false);
         renderer.shadowMap.enabled = true;
 
-        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+        const ambient = new THREE.AmbientLight(0xffffff, 0.85); // Increased to lighten shadows
         scene.add(ambient);
-        const dLight = new THREE.DirectionalLight(0xffffff, 0.7);
+        const dLight = new THREE.DirectionalLight(0xffffff, 0.4); // Decreased to soften highlights
         dLight.position.set(1000, 2000, 1000);
         dLight.castShadow = true;
         dLight.shadow.camera.left = -3000;
@@ -174,7 +174,8 @@
         groundMesh.receiveShadow = true;
         scene.add(groundMesh);
 
-        const ringGeo = new THREE.TorusGeometry(2000, 20, 16, 100);
+        // Thinner 3D boundary ring (reduced tube radius from 20 to 5)
+        const ringGeo = new THREE.TorusGeometry(2000, 5, 16, 100);
         const ringMat = new THREE.MeshBasicMaterial({ color: 0xffa500 });
         const ringMesh = new THREE.Mesh(ringGeo, ringMat);
         ringMesh.rotation.x = -Math.PI/2;
@@ -1128,7 +1129,8 @@
 
                 let ring_r = gamestate.ring !== undefined ? gamestate.ring : 2000;
                 let center_screen = to_screen(0, 0);
-                strokeCircle(center_screen[0], center_screen[1], Math.max(1, Math.trunc(ring_r * zoom)), ORANGE, Math.max(1, Math.trunc(5 * zoom)));
+                // Reduced orange ring thickness from 5x to 2x zoom multiplier
+                strokeCircle(center_screen[0], center_screen[1], Math.max(1, Math.trunc(ring_r * zoom)), ORANGE, Math.max(1, Math.trunc(2 * zoom)));
 
                 // Render Snow Particles
                 let valid_particles = [];
@@ -1260,14 +1262,17 @@
                         ctx.restore();
                     }
 
-                    let name_text = p.name || "Unknown";
-                    ctx.save();
-                    ctx.font = "bold 16px Arial";
-                    ctx.fillStyle = BLACK;
-                    ctx.textAlign = "center";
-                    ctx.textBaseline = "middle";
-                    ctx.fillText(name_text, sx, sy - scaled_size - 15);
-                    ctx.restore();
+                    // Check if player's X/Y is physically inside the canvas before rendering 2D text
+                    if (sx >= -50 && sx <= WIDTH + 50 && sy >= -50 && sy <= HEIGHT + 50) {
+                        let name_text = p.name || "Unknown";
+                        ctx.save();
+                        ctx.font = "bold 16px Arial";
+                        ctx.fillStyle = BLACK;
+                        ctx.textAlign = "center";
+                        ctx.textBaseline = "middle";
+                        ctx.fillText(name_text, sx, sy - scaled_size - 15);
+                        ctx.restore();
+                    }
                 }
 
                 // --- OUT OF BOUNDS DIRECTIONAL ARROW ---
@@ -1317,11 +1322,6 @@
 
                 let pCount = 0; let dummy = new THREE.Object3D();
                 let valid_particles = [];
-                
-                // Calculate the exact world-space dimensions currently visible on the 2D canvas
-                let cull_w = (WIDTH / 2) / zoom + 100;
-                let cull_h = (HEIGHT / 2) / zoom + 100;
-
                 for (let p of (gamestate.particles || [])) {
                     let eaten = false;
                     for (let player of (gamestate.players || [])) {
@@ -1336,11 +1336,8 @@
                     }
                     if (!eaten) {
                         valid_particles.push(p);
-                        // Culling Logic: Only render to 3D if inside the 2D bounds
-                        if (Math.abs(p[0] - target_x) < cull_w && Math.abs(p[1] - target_y) < cull_h) {
-                            dummy.position.set(p[0], p[2], p[1]); dummy.scale.set(p[2], p[2], p[2]); dummy.updateMatrix();
-                            partInstanced.setMatrixAt(pCount++, dummy.matrix);
-                        }
+                        dummy.position.set(p[0], p[2], p[1]); dummy.scale.set(p[2], p[2], p[2]); dummy.updateMatrix();
+                        partInstanced.setMatrixAt(pCount++, dummy.matrix);
                     }
                 }
                 gamestate.particles = valid_particles;
@@ -1348,10 +1345,8 @@
 
                 let prCount = 0;
                 for (let p of (gamestate.projectiles || [])) {
-                    if (Math.abs(p[0] - target_x) < cull_w && Math.abs(p[1] - target_y) < cull_h) {
-                        dummy.position.set(p[0], p[2], p[1]); dummy.scale.set(p[2], p[2], p[2]); dummy.updateMatrix();
-                        projInstanced.setMatrixAt(prCount++, dummy.matrix);
-                    }
+                    dummy.position.set(p[0], p[2], p[1]); dummy.scale.set(p[2], p[2], p[2]); dummy.updateMatrix();
+                    projInstanced.setMatrixAt(prCount++, dummy.matrix);
                 }
                 projInstanced.count = prCount; projInstanced.instanceMatrix.needsUpdate = true;
 
@@ -1402,9 +1397,6 @@
                     vp.last_x = vp.x;
                     vp.last_y = vp.y;
                     
-                    // Hide 3D players entirely if they walk outside the 2D canvas boundary
-                    group.visible = (Math.abs(vp.x - target_x) < cull_w + vp.size && Math.abs(vp.y - target_y) < cull_h + vp.size);
-                    
                     let screenPos = project3D(vp.x, vp.size * 2 + 10, vp.y);
                     if (screenPos) {
                         let [sx, sy] = screenPos;
@@ -1423,9 +1415,12 @@
                             let proj_size = (p_size + (p_size / 8)) / 4;
                             aimRayMesh.scale.set(1500, proj_size * 2, 1);
                         }
-                        let name_text = p.name || "Unknown";
-                        ctx.save(); ctx.font = "bold 16px Arial"; ctx.fillStyle = BLACK; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-                        ctx.fillText(name_text, sx, sy - 15); ctx.restore();
+                        // Check if player's projected 3D screen coordinate is physically inside the canvas before rendering 3D text overlay
+                        if (sx >= -50 && sx <= WIDTH + 50 && sy >= -50 && sy <= HEIGHT + 50) {
+                            let name_text = p.name || "Unknown";
+                            ctx.save(); ctx.font = "bold 16px Arial"; ctx.fillStyle = BLACK; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+                            ctx.fillText(name_text, sx, sy - 15); ctx.restore();
+                        }
                     }
                 }
 
