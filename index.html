@@ -188,6 +188,11 @@
         partInstanced.castShadow = true;
         scene.add(partInstanced);
         
+        // Secondary mesh specifically for translucent particle trails
+        const trailMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.4, depthWrite: false });
+        const trailInstanced = new THREE.InstancedMesh(partGeo, trailMat, 2000);
+        scene.add(trailInstanced);
+        
         const projGeo = new THREE.SphereGeometry(1, 16, 16);
         const projMat = new THREE.MeshLambertMaterial({ color: 0xddddff });
         const projInstanced = new THREE.InstancedMesh(projGeo, projMat, 200);
@@ -1342,6 +1347,24 @@
                 }
                 gamestate.particles = valid_particles;
                 partInstanced.count = pCount; partInstanced.instanceMatrix.needsUpdate = true;
+                
+                // Add 3D Particle Trails directly into the translucent InstancedMesh
+                let tCount = 0;
+                for (let vp of Object.values(visual_players)) {
+                    if (vp.trail_particles) {
+                        for (let pt of vp.trail_particles) {
+                            let scale = Math.max(0.1, pt[2] * (pt[3] / pt[4])); // Shrink trail over time
+                            dummy.position.set(pt[0], scale, pt[1]); 
+                            dummy.scale.set(scale, scale, scale); 
+                            dummy.updateMatrix();
+                            if (tCount < 2000) {
+                                trailInstanced.setMatrixAt(tCount++, dummy.matrix);
+                            }
+                        }
+                    }
+                }
+                
+                trailInstanced.count = tCount; trailInstanced.instanceMatrix.needsUpdate = true;
 
                 let prCount = 0;
                 for (let p of (gamestate.projectiles || [])) {
